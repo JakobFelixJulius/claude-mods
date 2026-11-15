@@ -1,0 +1,10 @@
+{
+  "name": "worktree-first",
+  "version": "0.2.2",
+  "description": "Keeps the main worktree on its default branch: code changes go to a linked worktree, set up with symlinked env files and cloned dependencies.",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "author": {
+    "name": "Jakob Felix Julius Sudau"
+  }
+}
