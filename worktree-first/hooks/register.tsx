@@ -43,6 +43,15 @@ function within(path: string, folder: string) {
   return path === folder || path.startsWith(`${folder}/`)
 }
 
+/**
+ * Whether git ignores the path, so it can never reach a commit: a new file under an
+ * ignored `_temp/` or `.dump/` is, a tracked file never is, even where a rule matches
+ * it. Only a clear yes counts; an error leaves the guard in place.
+ */
+async function isIgnored($: EngineInterface, root: string, path: string) {
+  return (await git($, ['check-ignore', '-q', '--', path], root)).ok
+}
+
 /** The checkout a `git -C <dir>` command acts on, resolved from the session's folder. */
 async function commitTarget($: EngineInterface, dir: string) {
   const script =
@@ -193,8 +202,9 @@ export const register: Register = on => {
   }).catch(() => ({ text: 'worktree-first: could not change the guard.' }))
 
   // The guard. It blocks a write only when the session sits in a repository's main
-  // checkout and the file being written belongs to that repository, so a scratch
-  // file, another project or a plugin folder is never in its way.
+  // checkout and the file being written belongs to that repository and is not
+  // gitignored, so a scratch file, notes in an ignored folder, another project or a
+  // plugin folder is never in its way.
   on('tool.call', { tool: WRITE_TOOLS }, async ($, e, next) => {
     const state = await current($)
     if (state === null || state.isWorktree || (await read($, guardOff))) return next(e)
@@ -202,6 +212,7 @@ export const register: Register = on => {
     const input = e as { file_path?: unknown; notebook_path?: unknown }
     const target = typeof input.file_path === 'string' ? input.file_path : input.notebook_path
     if (typeof target !== 'string' || !within(target, state.root)) return next(e)
+    if (await isIgnored($, state.root, target)) return next(e)
 
     return {
       deny:
@@ -209,6 +220,7 @@ export const register: Register = on => {
         `${state.branch === null ? '' : `, branch ${state.branch}`}), which stays on ` +
         `${state.defaultBranch ?? 'its default branch'}. Code changes belong in a worktree. ` +
         `Call EnterWorktree (a short, descriptive name is welcome), then make this change there. ` +
+        `Gitignored files, such as notes in an ignored folder, can be written here directly. ` +
         `If the user wants to edit the main worktree anyway, they can run /worktree-guard.`,
     }
     // A guard that cannot tell where it is lets the work through: this steers a

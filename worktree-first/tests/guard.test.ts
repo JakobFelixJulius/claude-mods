@@ -49,6 +49,12 @@ function checkout(on: On, where: 'main' | 'worktree' | 'plain', branch = 'dev', 
       return no
     }
     if (argv[0] !== 'git') return say('')
+    // The repository ignores `_temp/` and `.dump/`; `/repo/broken` plays a git that fails.
+    if (argv[1] === 'check-ignore') {
+      const path = argv[argv.length - 1] ?? ''
+      if (path.startsWith(`${MAIN}/broken/`)) return { value: { exitCode: 128, stdout: '', stderr: 'fatal' } }
+      return path.startsWith(`${MAIN}/_temp/`) || path.startsWith(`${MAIN}/.dump/`) ? say('') : no
+    }
     if (argv.includes('--git-dir')) {
       return where === 'plain' ? no : say(where === 'worktree' ? `${MAIN}/.git/worktrees/task` : `${MAIN}/.git`)
     }
@@ -78,6 +84,40 @@ test('an edit in the main worktree is refused, and says how to proceed', async (
 
   expect(result.deny).toMatch(/EnterWorktree/)
   expect(result.deny).toMatch(/main worktree/)
+})
+
+test('a gitignored file in the main worktree can be written', async ($, on) => {
+  mock.clock(on)
+  checkout(on, 'main')
+
+  const notes = await $.tool.call({ tool: 'Write', file_path: `${MAIN}/_temp/sprint-status.md`, content: '' })
+  expect(notes.deny).toBeUndefined()
+
+  const nested = await $.tool.call({
+    tool: 'Edit',
+    file_path: `${MAIN}/.dump/2026/handoff.md`,
+    old_string: 'a',
+    new_string: 'b',
+  })
+  expect(nested.deny).toBeUndefined()
+})
+
+test('the refusal says gitignored files are fine', async ($, on) => {
+  mock.clock(on)
+  checkout(on, 'main')
+
+  const result = await $.tool.call({ tool: 'Write', file_path: `${MAIN}/src/a.ts`, content: '' })
+
+  expect(result.deny).toMatch(/Gitignored files/)
+})
+
+test('a failing ignore check keeps the guard in place', async ($, on) => {
+  mock.clock(on)
+  checkout(on, 'main')
+
+  const result = await $.tool.call({ tool: 'Write', file_path: `${MAIN}/broken/a.ts`, content: '' })
+
+  expect(result.deny).toMatch(/EnterWorktree/)
 })
 
 test('an edit inside a worktree goes through', async ($, on) => {
