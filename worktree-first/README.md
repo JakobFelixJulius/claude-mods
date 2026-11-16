@@ -6,7 +6,7 @@ Keeps a repository's main worktree on its default branch, and sends every code c
 
 **Blocks code changes in the main worktree.** Edit, Write and NotebookEdit are refused while the session sits in a repository's main worktree. The refusal tells Claude to call `EnterWorktree` and make the change there, so in practice a worktree simply appears instead of a stray edit. `git commit` through Bash is refused the same way while the main worktree is on its default branch.
 
-The guard acts only on files that belong to that repository, so a scratch file, another project or a plugin folder is never in its way. It never acts outside a git repository, and never inside a worktree. If it cannot work out where it is, it lets the work through: this steers a workflow, it is not a security boundary.
+The guard acts only on files that belong to that repository, so a scratch file, another project or a plugin folder is never in its way. Files the repository ignores are let through too, as `git check-ignore` decides: notes in a gitignored `_temp/` or `.dump/` folder can be written from the main worktree, since they can never reach a commit. A tracked file stays guarded even where an ignore rule matches it. It never acts outside a git repository, and never inside a worktree. If it cannot work out where it is, it lets the work through: this steers a workflow, it is not a security boundary.
 
 **Furnishes each new worktree.** `git worktree add` gives you tracked files only, so a fresh worktree has no dependencies and no environment files, and nothing builds. After `EnterWorktree` succeeds, this mod copies across what the repository ignores but a build needs:
 
