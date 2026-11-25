@@ -94,6 +94,7 @@ async function look($: EngineInterface): Promise<RepoState> {
   let ahead = 0
   let behind = 0
   let changes = 0
+  let untracked = 0
   for (const line of status.out.split('\n')) {
     if (line.startsWith('# branch.head ')) {
       const name = line.slice('# branch.head '.length)
@@ -104,8 +105,11 @@ async function look($: EngineInterface): Promise<RepoState> {
       const [, , a = '+0', b = '-0'] = line.split(' ')
       ahead = Number(a.slice(1)) || 0
       behind = Number(b.slice(1)) || 0
+    } else if (line.startsWith('? ')) {
+      // Counted apart: a new file is work not yet committed, but until it is added
+      // it touches no diff, pull or commit, so it must not read as a change.
+      untracked += 1
     } else if (line !== '' && !line.startsWith('#') && !line.startsWith('!')) {
-      // Tracked changes and untracked files alike: an agent's new files count too.
       changes += 1
     }
   }
@@ -118,6 +122,7 @@ async function look($: EngineInterface): Promise<RepoState> {
     branch,
     defaultBranch: head.ok && head.out.startsWith('origin/') ? head.out.slice('origin/'.length) : null,
     changes,
+    untracked,
     ahead,
     behind,
     hasUpstream,
@@ -388,19 +393,25 @@ export const register: Register = on => {
     const isWide = columns >= 72
     const isMedium = columns >= 48
 
-    // Uncommitted files, then commits to push and to pull (as of the last fetch).
-    // Two groups, each after its own dot: `· 3 changed · ↑2 ↓1`.
+    // Changed tracked files, untracked files, then commits to push and to pull (as
+    // of the last fetch), each group after its own dot: `· 3 changed · 2 untracked · ↑2 ↓1`.
     const sync = [
       state.hasUpstream && state.ahead > 0 ? `↑${state.ahead}` : null,
       state.hasUpstream && state.behind > 0 ? `↓${state.behind}` : null,
     ]
       .filter((part): part is string => part !== null)
       .join(' ')
-    const countsText =
-      (state.changes > 0 ? ` · ${state.changes} changed` : '') + (sync === '' ? '' : ` · ${sync}`)
+    const changedText = state.changes > 0 ? ` · ${state.changes} changed` : ''
+    const untrackedText = state.untracked > 0 ? ` · ${state.untracked} untracked` : ''
+    const syncText = sync === '' ? '' : ` · ${sync}`
+    // The untracked count is the least urgent of the three: it goes where even the
+    // barest row, project and branch alone, would leave the branch no room.
+    const hasRoomForUntracked =
+      columns - state.name.length - ' · '.length - (changedText + untrackedText + syncText).length >= 14
+    const countsText = changedText + (hasRoomForUntracked ? untrackedText : '') + syncText
 
-    // Sheds from the end as the column narrows: the hint, then the worktree label;
-    // the project, branch and counts always stay.
+    // Sheds as the column narrows: the hint, then the worktree label, then the
+    // untracked count; the project, branch and the other counts always stay.
     const fits = (label: string, hint: string) =>
       columns - state.name.length - label.length - countsText.length - hint.length >= 14
     const room = (label: string, hint: string) =>

@@ -12,8 +12,10 @@ export type RepoState = {
   branch: string | null
   /** The remote's default branch (`origin/HEAD`), when it is known. */
   defaultBranch: string | null
-  /** Changed files in the working tree: tracked changes and untracked files. */
+  /** Tracked files with uncommitted changes, staged or not. */
   changes: number
+  /** Untracked files that are not ignored: new files nobody has added yet. */
+  untracked: number
   /** Commits not yet pushed to the upstream branch, as of the last fetch. */
   ahead: number
   /** Commits on the upstream branch not yet pulled, as of the last fetch. */
