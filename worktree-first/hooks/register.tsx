@@ -15,8 +15,13 @@ const LINK = ['.env', '.env.local', '.env.development.local', '.env.production.l
 /** Expensive directories copied as APFS clones: instant, and no extra disk until written. */
 const CLONE = ['node_modules']
 
-/** `.claude/worktree-first.json` in the repository overrides both lists. */
-type Setup = { link: string[]; clone: string[] }
+/** `.claude/worktree-first.json` in the repository overrides each of these. */
+type Setup = { link: string[]; clone: string[]; terminal: boolean }
+
+/** The desktop app's Terminal panel, reached through its own tools. Absent in a plain terminal session. */
+const OPEN_TAB = 'mcp__terminal__open_terminal_tab'
+const LIST_TABS = 'mcp__terminal__list_terminal_tabs'
+const RUN_IN_TAB = 'mcp__terminal__run_in_terminal'
 
 async function git($: EngineInterface, argv: string[], cwd?: string) {
   const ran = await $.process.run(['git', ...argv], cwd ? { cwd } : undefined)
@@ -127,9 +132,47 @@ async function readSetup($: EngineInterface, main: string): Promise<Setup> {
       const value = (parsed as Record<string, unknown>)?.[key]
       return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : fallback
     }
-    return { link: from('link', LINK), clone: from('clone', CLONE) }
+    const terminal = (parsed as Record<string, unknown>)?.terminal
+    return { link: from('link', LINK), clone: from('clone', CLONE), terminal: terminal !== false }
   } catch {
-    return { link: LINK, clone: CLONE }
+    return { link: LINK, clone: CLONE, terminal: true }
+  }
+}
+
+/**
+ * Gives the desktop app's Terminal panel a tab whose shell starts in the worktree,
+ * so what the user types there runs on the session's branch, not the main worktree's.
+ * The panel cannot move a shell that is already running, so this is a new tab; a
+ * worktree that already has one is left alone.
+ *
+ * Unless `show` is set it acts only where the panel already has a tab, which is how
+ * a session that uses the terminal is told from one that never does, and it adds the
+ * tab without bringing the panel up. Answers `opened`, `present`, `unused` where the
+ * panel has no tab, `none` where the session has no Terminal panel, or `failed`.
+ */
+async function followTerminal($: EngineInterface, worktree: string, title: string, show = false) {
+  let tabs: string
+  try {
+    const listed = await $.tool.call({ tool: LIST_TABS })
+    if (listed.deny !== undefined || listed.isError === true) return 'failed' as const
+    tabs = listed.text ?? ''
+  } catch {
+    // No such tool: a session in a plain terminal, where the user's shell is their own.
+    return 'none' as const
+  }
+  // Each tab is listed with the directory its shell started in, as a JSON string.
+  if (tabs.includes(JSON.stringify(worktree))) return 'present' as const
+  if (!show && !tabs.includes('"tab_id"')) return 'unused' as const
+
+  try {
+    // Opening a tab shows the panel; running a command adds one behind it. The
+    // command is a harmless one that says which branch the new shell is on.
+    const opened = show
+      ? await $.tool.call({ tool: OPEN_TAB, cwd: worktree, title })
+      : await $.tool.call({ tool: RUN_IN_TAB, command: 'git status -sb', cwd: worktree, title })
+    return opened.deny !== undefined || opened.isError === true ? ('failed' as const) : ('opened' as const)
+  } catch {
+    return 'failed' as const
   }
 }
 
@@ -187,6 +230,10 @@ export const register: Register = on => {
       name: 'worktree-guard',
       description: 'worktree-first: allow or block code changes in the main worktree',
     })
+    await $.command.register({
+      name: 'worktree-terminal',
+      description: 'worktree-first: open a terminal tab in the worktree this session works in',
+    })
     await current($, true)
     return next(e)
   })
@@ -200,6 +247,26 @@ export const register: Register = on => {
         : 'worktree-first: guard off for this session. Code changes in the main worktree are allowed.',
     }
   }).catch(() => ({ text: 'worktree-first: could not change the guard.' }))
+
+  // The terminal on request: for a session that had none in use when it entered the
+  // worktree, and wants one now.
+  on('command.run', { command: 'worktree-terminal' }, async $ => {
+    const state = await current($, true)
+    if (state === null || !state.isWorktree) {
+      return { text: 'worktree-first: this session is not in a linked worktree, so the terminal is already where it works.' }
+    }
+    const terminal = await followTerminal($, state.path, short(state.branch ?? basename(state.path), 28), true)
+    return {
+      text:
+        terminal === 'opened'
+          ? `worktree-first: opened a terminal tab in ${state.path}.`
+          : terminal === 'present'
+            ? 'worktree-first: the Terminal panel already has a tab in this worktree.'
+            : terminal === 'none'
+              ? 'worktree-first: this session has no Terminal panel.'
+              : 'worktree-first: could not open a terminal tab.',
+    }
+  }).catch(() => ({ text: 'worktree-first: could not open a terminal tab.' }))
 
   // The guard. It blocks a write only when the session sits in a repository's main
   // checkout and the file being written belongs to that repository and is not
@@ -260,7 +327,12 @@ export const register: Register = on => {
   // the end of each turn keeps the row from going stale.
   on('turn.complete', async ($, e, next) => {
     try {
-      await current($, true)
+      const state = await current($, true)
+      // A terminal the user opened after the session entered its worktree starts in
+      // the main one: by the end of the turn it has a tab in the worktree too.
+      if (state !== null && state.isWorktree && (await readSetup($, state.root)).terminal) {
+        await followTerminal($, state.path, short(state.branch ?? basename(state.path), 28))
+      }
     } catch {
       // A failed look leaves the last state showing; the turn must still complete.
     }
@@ -277,16 +349,28 @@ export const register: Register = on => {
     if (typeof worktree !== 'string' || worktree === main) return entered
 
     const { linked, cloned, failed } = await furnish($, worktree, main)
-    await current($, true)
+    const state = await current($, true)
+
+    // The Terminal panel's shells stay where they started, in the main worktree. A
+    // session that has the terminal in use gets a tab in the worktree; one that
+    // does not is left without.
+    const terminal = (await readSetup($, main)).terminal
+      ? await followTerminal($, worktree, short(state?.branch ?? basename(worktree), 28))
+      : 'none'
 
     const parts = [
       cloned.length > 0 ? `cloned ${cloned.join(', ')}` : null,
       linked.length > 0 ? `linked ${linked.join(', ')}` : null,
       failed.length > 0 ? `could not set up ${failed.join(', ')}` : null,
+      terminal === 'opened' ? 'added a terminal tab in the worktree' : null,
+      // Claude can still open it, with the user asked as for any tool call.
+      terminal === 'failed'
+        ? `could not add a terminal tab in the worktree: if the user asks for a terminal, open it with cwd ${worktree}`
+        : null,
     ].filter((part): part is string => part !== null)
 
     if (parts.length === 0) return entered
-    $.ui.toast(`worktree-first: ${parts.join(', ')}`)
+    $.ui.toast(`worktree-first: ${parts.filter(part => !part.startsWith('could not add')).join(', ') || 'worktree ready'}`)
     return { ...entered, result: { ...(entered.result as object), worktreeFirst: parts.join('; ') } }
     // Setting the worktree up is a convenience; entering it must still succeed.
   }).catch(($, e, next) => (next.called ? next(e) : next(e)))

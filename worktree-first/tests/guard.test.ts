@@ -260,3 +260,148 @@ test('the main worktree with uncommitted changes shows them in its warning', asy
   expect(await ui.find({ type: 'Text', text: /main worktree · dev · 2 changed/ })).toBeDefined()
   await ui.unmount()
 })
+
+/**
+ * Plays the desktop app's Terminal panel: lists its tabs and records each one the mod
+ * adds, as `shown` when it opened the panel with it and `quiet` when it did not.
+ * Called before `checkout`: a hook added earlier answers first.
+ */
+function terminalPanel(on: On, tabs: { cwd: string }[] = []) {
+  const added: { how: 'shown' | 'quiet'; cwd?: unknown; title?: unknown }[] = []
+  on('tool.call', { tool: 'mcp__terminal__list_terminal_tabs' }, () => ({
+    result: {},
+    text: JSON.stringify(tabs.map((tab, i) => ({ tab_id: `t${i}`, title: 'zsh', cwd: tab.cwd })), null, 2),
+  }))
+  on('tool.call', { tool: 'mcp__terminal__open_terminal_tab' }, ($, e) => {
+    const input = e as { cwd?: unknown; title?: unknown }
+    added.push({ how: 'shown', cwd: input.cwd, title: input.title })
+    return { result: {}, text: '{"tab_id":"t9"}' }
+  })
+  on('tool.call', { tool: 'mcp__terminal__run_in_terminal' }, ($, e) => {
+    const input = e as { cwd?: unknown; title?: unknown }
+    added.push({ how: 'quiet', cwd: input.cwd, title: input.title })
+    return { result: {}, text: '{"tab_id":"t9"}' }
+  })
+  return added
+}
+
+/**
+ * Enters the worktree from the main one: git reports the worktree's branch afterwards.
+ * Called last in a test, since `checkout` ends in a catch-all.
+ */
+function enter(on: On) {
+  on('tool.call', { tool: 'EnterWorktree' }, () => ({ result: { worktreePath: WORKTREE } }))
+  return checkout(on, 'main', 'fix/login')
+}
+
+test('a session with no terminal in use enters a worktree without one appearing', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on)
+  enter(on)
+
+  const entered = await $.tool.call({ tool: 'EnterWorktree', name: 'task' })
+
+  expect(added).toEqual([])
+  expect(JSON.stringify(entered.result)).not.toMatch(/terminal/)
+})
+
+test('a session with a terminal in use gets a tab in the worktree, without the panel opening', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on, [{ cwd: MAIN }])
+  enter(on)
+
+  const entered = await $.tool.call({ tool: 'EnterWorktree', name: 'task' })
+
+  expect(added).toEqual([{ how: 'quiet', cwd: WORKTREE, title: 'fix/login' }])
+  expect(JSON.stringify(entered.result)).toMatch(/added a terminal tab/)
+})
+
+test('a worktree that already has a terminal tab gets no second one', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on, [{ cwd: MAIN }, { cwd: WORKTREE }])
+  enter(on)
+
+  await $.tool.call({ tool: 'EnterWorktree', path: WORKTREE })
+
+  expect(added).toEqual([])
+})
+
+test('a terminal opened after entering the worktree gets its tab when the turn ends', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on, [{ cwd: MAIN }])
+  checkout(on, 'worktree', 'fix/login')
+
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  expect(added).toEqual([{ how: 'quiet', cwd: WORKTREE, title: 'fix/login' }])
+})
+
+test('the end of a turn in the main worktree adds no tab', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on, [{ cwd: MAIN }])
+  checkout(on, 'main')
+
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  expect(added).toEqual([])
+})
+
+test('/worktree-terminal opens a tab in the worktree, panel and all', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on)
+  checkout(on, 'worktree', 'fix/login')
+
+  const ran = await $.command.run({ command: 'worktree-terminal', args: '' } as never)
+
+  expect(added).toEqual([{ how: 'shown', cwd: WORKTREE, title: 'fix/login' }])
+  expect(ran.text).toMatch(/opened a terminal tab/)
+})
+
+test('/worktree-terminal in the main worktree opens nothing', async ($, on) => {
+  mock.clock(on)
+  const added = terminalPanel(on)
+  checkout(on, 'main')
+
+  const ran = await $.command.run({ command: 'worktree-terminal', args: '' } as never)
+
+  expect(added).toEqual([])
+  expect(ran.text).toMatch(/not in a linked worktree/)
+})
+
+test('a refused terminal tab leaves the worktree entered', async ($, on) => {
+  mock.clock(on)
+  on('tool.call', { tool: 'mcp__terminal__list_terminal_tabs' }, () => ({ result: {}, text: '[{"tab_id":"t0","cwd":"/repo"}]' }))
+  on('tool.call', { tool: 'mcp__terminal__run_in_terminal' }, () => ({ deny: 'not now' }))
+  enter(on)
+
+  const entered = await $.tool.call({ tool: 'EnterWorktree', name: 'task' })
+
+  expect(entered.deny).toBeUndefined()
+  expect(JSON.stringify(entered.result)).toMatch(/could not add a terminal tab/)
+})
+
+test('a session without a Terminal panel enters the worktree as before', async ($, on) => {
+  mock.clock(on)
+  on('tool.call', { tool: 'mcp__terminal__list_terminal_tabs' }, () => {
+    throw new Error('no such tool')
+  })
+  enter(on)
+
+  const entered = await $.tool.call({ tool: 'EnterWorktree', name: 'task' })
+
+  expect(entered.deny).toBeUndefined()
+  expect(JSON.stringify(entered.result)).not.toMatch(/terminal/)
+})
+
+test('"terminal": false in the repository setup adds no tab', async ($, on) => {
+  mock.clock(on)
+  on('fs.read', () => ({ value: '{"terminal": false}' }))
+  const added = terminalPanel(on, [{ cwd: MAIN }])
+  enter(on)
+
+  await $.tool.call({ tool: 'EnterWorktree', name: 'task' })
+
+  expect(added).toEqual([])
+})

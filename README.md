@@ -4,7 +4,7 @@ Claude Code mods: plugins that change how Claude Code itself behaves. This repos
 
 | Mod | What it does |
 | --- | --- |
-| [worktree-first](worktree-first/) | Keeps a repository's main worktree on its default branch. Code changes go to a linked worktree, set up with symlinked env files and APFS-cloned dependencies. A row above the prompt names the project, branch, changed files and commits to push or pull. |
+| [worktree-first](worktree-first/) | Keeps a repository's main worktree on its default branch. Code changes go to a linked worktree, set up with symlinked env files and APFS-cloned dependencies. In the desktop app, a terminal in use gets a tab in the worktree. A row above the prompt names the project, branch, changed files and commits to push or pull. |
 
 ## Install
 
