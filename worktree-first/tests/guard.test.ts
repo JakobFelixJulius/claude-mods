@@ -9,7 +9,7 @@ const WORKTREE = '/repo/.claude/worktrees/task'
  * calls the mod makes, and lets any tool call through at the bottom, so what a
  * test sees is the mod's own decision.
  */
-type Sync = { changes?: number; ahead?: number; behind?: number }
+type Sync = { changes?: number; untracked?: number; ahead?: number; behind?: number }
 
 /** What `git status --porcelain=v2 --branch` prints for a branch in this state. */
 function porcelain(branch: string, sync: Sync) {
@@ -20,6 +20,7 @@ function porcelain(branch: string, sync: Sync) {
     `# branch.ab +${sync.ahead ?? 0} -${sync.behind ?? 0}`,
   ]
   for (let i = 0; i < (sync.changes ?? 0); i += 1) lines.push(`1 .M N... 100644 100644 100644 a b src/file${i}.ts`)
+  for (let i = 0; i < (sync.untracked ?? 0); i += 1) lines.push(`? notes/new${i}.md`)
   return lines.join('\n')
 }
 
@@ -226,13 +227,45 @@ test('the band shows changed files and commits to push and pull', async ($, on) 
   await ui.unmount()
 })
 
+test('untracked files are counted apart from changed ones', async ($, on) => {
+  mock.clock(on)
+  checkout(on, 'worktree', 'fix/login', { changes: 3, untracked: 2, ahead: 1 })
+  await $.tool.call({ tool: 'Edit', file_path: `${WORKTREE}/a.ts` })
+
+  const ui = await $.ui.mount(band(100))
+  expect(await ui.find({ type: 'Text', text: /3 changed · 2 untracked · ↑1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a main worktree with only an untracked file does not call it changed', async ($, on) => {
+  mock.clock(on)
+  checkout(on, 'main', 'dev', { untracked: 1 })
+  await $.tool.call({ tool: 'Bash', command: 'git status' })
+
+  const ui = await $.ui.mount(band(100))
+  expect(await ui.find({ type: 'Text', text: /main worktree · dev · 1 untracked/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /changed ·|changed$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a narrow column drops the untracked count and keeps the rest', async ($, on) => {
+  mock.clock(on)
+  checkout(on, 'worktree', 'fix/login', { changes: 3, untracked: 2, ahead: 1 })
+  await $.tool.call({ tool: 'Edit', file_path: `${WORKTREE}/a.ts` })
+
+  const ui = await $.ui.mount(band(40))
+  expect(await ui.find({ type: 'Text', text: /3 changed · ↑1/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /untracked/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('a clean, in-step branch shows no counts', async ($, on) => {
   mock.clock(on)
   checkout(on, 'worktree', 'fix/login', {})
   await $.tool.call({ tool: 'Edit', file_path: `${WORKTREE}/a.ts` })
 
   const ui = await $.ui.mount(band(100))
-  expect(await ui.find({ type: 'Text', text: /changed|↑|↓/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /changed|untracked|↑|↓/ })).toBeUndefined()
   await ui.unmount()
 })
 
